@@ -25,8 +25,15 @@ WORKING_GEOHIDE_IPS = [
     "159.194.200.33"
 ]
 
-# Авторизационные и системные домены, которые ВСЕГДА идут напрямую
+# Авторизационные и системные домены, которые ВСЕГДА идут напрямую (GeoHide их сбрасывает по EOF)
 EXCLUDED_AUTH_DOMAINS = {
+    "cloudcode-pa.googleapis.com",
+    "aiplatform.googleapis.com",
+    "s-aiplatform.googleapis.com",
+    "businessaicode.googleapis.com",
+    "autopush-cloudcode-pa.sandbox.googleapis.com",
+    "autopush-aicode.sandbox.googleapis.com",
+    "preprod-daily-cloudcode-pa.sandbox.googleapis.com",
     "oauth2.googleapis.com",
     "accounts.google.com",
     "accounts.youtube.com",
@@ -49,7 +56,7 @@ EXCLUDED_AUTH_DOMAINS = {
     "play.google.com"
 }
 
-# Встроенные базовые AI-домены, требующие GeoHide
+# Встроенные базовые AI-домены, подтвержденно поддерживаемые GeoHide
 DEFAULT_AI_DOMAINS = {
     "gemini.google.com",
     "gemini.google",
@@ -59,10 +66,7 @@ DEFAULT_AI_DOMAINS = {
     "antigravity.google",
     "www.antigravity.google",
     "daily-cloudcode-pa.googleapis.com",
-    "cloudcode-pa.googleapis.com",
     "aisandbox-pa.googleapis.com",
-    "aiplatform.googleapis.com",
-    "s-aiplatform.googleapis.com",
     "bard.google.com",
     "notebooklm.google.com",
     "notebooklm.google",
@@ -138,30 +142,41 @@ class GeoHideSmartProxy:
     def is_geohide_target(self, host: str) -> bool:
         """
         Проверяет, должен ли запрос идти через GeoHide:
-        - Возвращает False для Google OAuth2, Accounts и других не-AI сервисов.
-        - Возвращает True для всех Google AI, Gemini, Claude, OpenAI и базы GeoHide.
+        - Возвращает False для Google OAuth2, Accounts, cloudcode-pa и сервисов,
+          которые GeoHide НЕ поддерживает (во избежание ошибки EOF / Connection Reset).
+        - Возвращает True только для тех AI-сервисов, которые подтвержденно поддерживаются GeoHide.
         """
         host = host.lower().strip()
 
-        # 1. Авторизационные домены ВСЕГДА напрямую (иначе ошибка oauth2 token EOF)
+        # 1. Авторизационные домены и неподдерживаемые API ВСЕГДА напрямую
         if host in EXCLUDED_AUTH_DOMAINS:
             return False
         if host.startswith("accounts.") or host.startswith("oauth.") or host.startswith("login."):
             return False
+        if host == "cloudcode-pa.googleapis.com" or host.endswith(".sandbox.googleapis.com"):
+            return False
 
-        # 2. Точное совпадение в базе GeoHide
+        # 2. Точное совпадение в проверенной базе GeoHide
         if host in self.geohide_domains:
             return True
 
-        # 3. AI паттерны (Google AI, Gemini, Claude, OpenAI)
-        ai_keywords = [
-            "gemini", "aistudio", "generativelanguage",
-            "cloudcode", "aicode", "aiplatform", "alkali",
-            "aisandbox", "notebooklm", "antigravity"
-        ]
-        if any(kw in host for kw in ai_keywords):
+        # 3. Подтвержденные AI-домены Google, требующие GeoHide для обхода геоблока
+        if (
+            "gemini" in host
+            or "aistudio" in host
+            or "generativelanguage" in host
+            or host == "daily-cloudcode-pa.googleapis.com"
+            or host == "aicode.googleapis.com"
+            or host == "aisandbox-pa.googleapis.com"
+            or "alkalicore" in host
+            or "alkalimakersuite" in host
+            or "geminiweb" in host
+            or "notebooklm" in host
+            or "antigravity" in host
+        ):
             return True
 
+        # 4. Другие популярные зарубежные AI (OpenAI, Claude)
         if host.endswith(".openai.com") or host.endswith(".anthropic.com") or host.endswith(".claude.ai"):
             return True
 

@@ -150,6 +150,13 @@ pyinstaller --noconsole --onefile --clean --icon=icon.ico --add-data "icon.ico;.
 
 ## 📝 Журнал изменений (Changelog)
 
+### Версия 1.4.2 (15.10.2026)
+- **Исправление ошибки «loadCodeAssist: EOF» при входе в Google аккаунт:**
+  - Проведён аудит SNI-поддержки реверс-прокси GeoHide: выявлено, что узел `cloudcode-pa.googleapis.com` (в отличие от `daily-cloudcode-pa`) не входит в список разрешённых доменов GeoHide и сбрасывается сервером по EOF.
+  - Домен `cloudcode-pa.googleapis.com` переведён на прямое подключение (Direct Connection), так как он не блокируется провайдерами и отвечает напрямую.
+  - Очищена база доменов: исключены внутренние служебные песочницы Google, вызывавшие сброс авторизации.
+  - Устранена ошибка `Post "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": EOF` при смене и входе в Google аккаунты.
+
 ### Версия 1.4.1 (15.10.2026)
 - **Устранение ошибки «Model unavailable, retrying in 4s» в режиме Smart Proxy:**
   - Полностью переписан сетевой пайп `_pipe_bidirectional` в `local_proxy.py`: переход на двухпоточную блокирующую архитектуру с полной поддержкой постоянных соединений HTTP/2, gRPC и streaming RPC.
