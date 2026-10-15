@@ -5,10 +5,10 @@ cd /d "%~dp0"
 
 echo ====================================================
 echo Starting PyInstaller build for GeoHideManager.exe...
-echo Mode: OneFile, NoConsole, Icon embedded
+echo Mode: OneFile, NoConsole, Icon embedded, Domains JSON embedded
 echo ====================================================
 
-python -m PyInstaller --noconsole --onefile --clean --icon=icon.ico --add-data "icon.ico;." --add-data "icon.png;." --name="GeoHideManager" app.py
+python -m PyInstaller --noconsole --onefile --clean --icon=icon.ico --add-data "icon.ico;." --add-data "icon.png;." --add-data "geohide_domains.json;." --name="GeoHideManager" app.py
 
 if %ERRORLEVEL% EQU 0 (
     echo.

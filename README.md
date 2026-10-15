@@ -105,6 +105,12 @@ pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." --add-
 
 ## 📝 Журнал изменений (Changelog)
 
+### Версия 1.3.1 (15.10.2026)
+- **Исправление авторизации Google OAuth2 / Token:**
+  - Добавлено строгое исключение авторизационных доменов (`oauth2.googleapis.com`, `accounts.google.com`, `identitytoolkit.googleapis.com`, `securetoken.googleapis.com`) из маршрутизации GeoHide — они всегда направляются напрямую.
+  - Устранена ошибка `Post "https://oauth2.googleapis.com/token": EOF` при входе в аккаунт Antigravity.
+  - В бинарник встроена актуальная база доменов `geohide_domains.json`.
+
 ### Версия 1.3.0 (15.10.2026)
 - **Вайбкодинг релиз:**
   - Полная очистка кода и документации от персональных путей: проект 100% портативен и готов к открытому распространению.

@@ -1,16 +1,20 @@
 """
 Local GeoHide Smart Proxy Module
 Обеспечивает выборочную маршрутизацию трафика (Per-Process Proxy) только для
-процессов Antigravity.exe и language_server.exe без изменения общесистемных
-настроек DNS и файла hosts.
+процессов Antigravity.exe, language_server.exe и CLI agy.exe.
+Исключает авторизационные домены (Google OAuth2 / Accounts), чтобы вход в аккаунт
+всегда происходил напрямую без ошибок EOF.
 """
 
 import socket
 import select
 import threading
 import time
+import os
+import sys
+import json
 import re
-from typing import Callable, Optional
+from typing import Callable, Optional, Set
 
 # Список проверенных рабочих IP GeoHide SNI-прокси
 WORKING_GEOHIDE_IPS = [
@@ -21,20 +25,98 @@ WORKING_GEOHIDE_IPS = [
     "37.230.192.51"
 ]
 
-# Паттерны доменов, требующих маршрутизации через GeoHide (Google AI, Gemini, OpenAI и др.)
-GEOHIDE_DOMAINS_PATTERNS = [
-    r"gemini\.google\.com",
-    r".*\.gemini\.google\.com",
-    r"generativelanguage\.googleapis\.com",
-    r".*\.googleapis\.com",
-    r"aistudio\.google\.com",
-    r"alkalimakersuite-pa\.clients6\.google\.com",
-    r"openai\.com",
-    r".*\.openai\.com",
-    r".*\.anthropic\.com",
-    r"claude\.ai",
-    r".*\.claude\.ai"
-]
+# Авторизационные и системные домены, которые ВСЕГДА идут напрямую
+EXCLUDED_AUTH_DOMAINS = {
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+    "accounts.youtube.com",
+    "myaccount.google.com",
+    "login.google.com",
+    "oauth.google.com",
+    "identitytoolkit.googleapis.com",
+    "securetoken.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "www.googleapis.com",
+    "www.google.com",
+    "google.com",
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "ssl.gstatic.com",
+    "www.gstatic.com",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "play.google.com"
+}
+
+
+# Встроенные базовые AI-домены, требующие GeoHide
+DEFAULT_AI_DOMAINS = {
+    "gemini.google.com",
+    "gemini.google",
+    "generativelanguage.googleapis.com",
+    "aistudio.google.com",
+    "aicode.googleapis.com",
+    "antigravity.google",
+    "www.antigravity.google",
+    "daily-cloudcode-pa.googleapis.com",
+    "aisandbox-pa.googleapis.com",
+    "bard.google.com",
+    "notebooklm.google.com",
+    "notebooklm.google",
+    "alkalicore-pa.clients6.google.com",
+    "alkalimakersuite-pa.clients6.google.com",
+    "geminiweb-pa.clients6.google.com",
+    "deepmind.google",
+    "openai.com",
+    "api.openai.com",
+    "chat.openai.com",
+    "chatgpt.com",
+    "anthropic.com",
+    "api.anthropic.com",
+    "claude.ai"
+}
+
+def get_base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def load_geohide_database() -> Set[str]:
+    """Загружает базу доменов GeoHide из json или системного файла hosts."""
+    domains = set(DEFAULT_AI_DOMAINS)
+    
+    # 1. Попытка загрузить из geohide_domains.json
+    json_path = os.path.join(get_base_dir(), "geohide_domains.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for d in data:
+                    domains.add(d.lower().strip())
+        except Exception:
+            pass
+
+    # 2. Попытка прочитать из системного hosts, если там уже есть записи GeoHide
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    hosts_path = os.path.join(windir, "System32", "drivers", "etc", "hosts")
+    if os.path.exists(hosts_path):
+        try:
+            with open(hosts_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and not parts[0].startswith("#"):
+                        # Проверяем, является ли IP адресом GeoHide
+                        ip = parts[0]
+                        if any(ip.startswith(prefix) for prefix in ["193.233.", "159.194.", "37.230.", "45.155.", "46.8."]):
+                            domains.add(parts[1].lower().strip())
+        except Exception:
+            pass
+
+    # Гарантируем отсутствие авторизационных доменов в базе проксирования
+    domains.difference_update(EXCLUDED_AUTH_DOMAINS)
+    return domains
+
 
 class GeoHideSmartProxy:
     def __init__(self, host: str = "127.0.0.1", port: int = 8899, log_callback: Optional[Callable[[str], None]] = None):
@@ -46,20 +128,45 @@ class GeoHideSmartProxy:
         self._thread: Optional[threading.Thread] = None
         self._active_connections = 0
 
+        # Загружаем актуальную базу доменов GeoHide
+        self.geohide_domains = load_geohide_database()
+
     def log(self, message: str):
         if self.log_callback:
             self.log_callback(message)
 
     def is_geohide_target(self, host: str) -> bool:
+        """
+        Проверяет, должен ли запрос идти через GeoHide:
+        - Возвращает False для Google OAuth2, Accounts и других не-AI сервисов.
+        - Возвращает True только для сервисов Gemini, OpenAI, Claude и базы GeoHide.
+        """
         host = host.lower().strip()
-        for pattern in GEOHIDE_DOMAINS_PATTERNS:
-            if re.fullmatch(pattern, host):
-                return True
+
+        # 1. Авторизационные домены ВСЕГДА напрямую (иначе ошибка oauth2 token EOF)
+        if host in EXCLUDED_AUTH_DOMAINS:
+            return False
+        if host.startswith("accounts.") or host.startswith("oauth.") or host.startswith("login."):
+            return False
+
+        # 2. Точное совпадение в базе GeoHide
+        if host in self.geohide_domains:
+            return True
+
+        # 3. AI паттерны (Gemini, Claude, OpenAI)
+        if "gemini" in host or "aistudio" in host or "generativelanguage" in host:
+            return True
+        if host.endswith(".openai.com") or host.endswith(".anthropic.com") or host.endswith(".claude.ai"):
+            return True
+
         return False
 
     def start(self) -> bool:
         if self.is_running:
             return True
+
+        # Обновляем базу доменов при запуске
+        self.geohide_domains = load_geohide_database()
 
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -71,7 +178,7 @@ class GeoHideSmartProxy:
 
             self._thread = threading.Thread(target=self._accept_loop, daemon=True)
             self._thread.start()
-            self.log(f"Локальный Smart Proxy запущен на http://{self.host}:{self.port}")
+            self.log(f"Локальный Smart Proxy запущен на http://{self.host}:{self.port} (активно {len(self.geohide_domains)} правил)")
             return True
         except Exception as e:
             self.log(f"Не удалось запустить Smart Proxy на {self.host}:{self.port}: {e}")
@@ -139,7 +246,7 @@ class GeoHideSmartProxy:
             else:
                 self._handle_plain_http(client_sock, method, target, req_data)
 
-        except Exception as e:
+        except Exception:
             pass
         finally:
             self._active_connections = max(0, self._active_connections - 1)
@@ -173,11 +280,13 @@ class GeoHideSmartProxy:
                     continue
 
         if not remote_sock:
-            # Стандартное прямое разрешение
+            # Прямое подключение (для OAuth, аккаунтов, обычных сайтов или при сбое GeoHide)
             try:
                 remote_sock = socket.create_connection((host, port), timeout=6.0)
                 if use_geohide:
                     self.log(f"CONNECT {host}:{port} -> Прямое (GeoHide недоступен)")
+                else:
+                    self.log(f"CONNECT {host}:{port} -> Прямое (OAuth/Стандарт)")
             except Exception as e:
                 client_sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                 return
@@ -186,7 +295,6 @@ class GeoHideSmartProxy:
         self._pipe_bidirectional(client_sock, remote_sock)
 
     def _handle_plain_http(self, client_sock: socket.socket, method: str, url: str, initial_data: bytes):
-        # Парсинг URL
         host = ""
         port = 80
         if url.startswith("http://"):
