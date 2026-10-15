@@ -1,7 +1,7 @@
 """
 Antigravity Config & Process Management Module
 Управление настройками прокси для Antigravity IDE, Antigravity 2.0 и CLI (agy),
-а также мониторинг и перезапуск процессов.
+а также мониторинг и перезапуск процессов с динамическим определением путей.
 """
 
 import os
@@ -14,21 +14,22 @@ import subprocess
 import time
 from typing import Optional
 
-ANTIGRAVITY_EXE_PATH = r"C:\Users\manka\AppData\Local\Programs\antigravity\Antigravity.exe"
-
 def get_antigravity_exe_path() -> str:
-    """Возвращает путь к исполняемому файлу Antigravity.exe."""
-    if os.path.exists(ANTIGRAVITY_EXE_PATH):
-        return ANTIGRAVITY_EXE_PATH
-    
+    """Динамически находит путь к Antigravity.exe на любой системе."""
     local_app_data = os.environ.get("LOCALAPPDATA", "")
-    candidate = os.path.join(local_app_data, "Programs", "antigravity", "Antigravity.exe")
-    if os.path.exists(candidate):
-        return candidate
-    return ANTIGRAVITY_EXE_PATH
+    candidates = [
+        os.path.join(local_app_data, "Programs", "antigravity", "Antigravity.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Antigravity", "Antigravity.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Antigravity", "Antigravity.exe"),
+        shutil.which("Antigravity.exe") or ""
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return candidates[0]
 
 def get_antigravity_settings_path() -> Optional[str]:
-    """Возвращает путь к settings.json Antigravity IDE."""
+    """Возвращает путь к settings.json Antigravity IDE (%APPDATA%\\Antigravity\\User\\settings.json)."""
     appdata = os.environ.get("APPDATA")
     if not appdata:
         return None
@@ -242,7 +243,6 @@ def restart_antigravity() -> tuple[bool, str]:
 
     # 3. Запускаем Antigravity заново
     try:
-        # Передаем обновленное окружение с HTTP_PROXY
         env = os.environ.copy()
         env["HTTP_PROXY"] = "http://127.0.0.1:8899"
         env["HTTPS_PROXY"] = "http://127.0.0.1:8899"

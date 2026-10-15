@@ -1,9 +1,11 @@
 """
-GeoHide DNS Manager - Graphical User Interface
-Поддерживает два режима работы:
-1. 🎯 Изолированный (Antigravity IDE, Antigravity 2.0 Desktop и CLI agy через локальный Smart Proxy)
-2. 🌐 Глобальный (Для всей Windows через системный hosts и DNS-серверы)
-С автоматическим обнаружением запущенной Antigravity и интерактивным диалогом перезапуска.
+GeoHide DNS Manager - Graphical User Interface v1.3.0
+Поддерживает:
+1. 🎯 Изолированный режим (Antigravity IDE, 2.0 Desktop и agy CLI)
+2. 🌐 Глобальный режим (Для всей Windows)
+3. 📌 Работа в системном трее (pystray) при закрытии крестиком
+4. 🚀 Автозапуск вместе с Windows через реестр
+5. 🛡️ Предупреждение и перезапуск Antigravity при включении
 """
 
 import os
@@ -16,11 +18,30 @@ import tkinter as tk
 from PIL import Image
 
 import customtkinter as ctk
+import pystray
+from pystray import MenuItem as item
 
 # Внутренние модули
 import geohide_core
 import antigravity_config
+import autostart
 from local_proxy import GeoHideSmartProxy
+
+
+def get_resource_path(relative_path: str) -> str:
+    """Возвращает корректный путь к ресурсам как для скрипта, так и для скомпилированного .exe."""
+    if getattr(sys, "frozen", False):
+        base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    direct_path = os.path.join(base_path, relative_path)
+    if os.path.exists(direct_path):
+        return direct_path
+    
+    # Резервный поиск рядом с исполняемым файлом
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.join(exe_dir, relative_path)
 
 
 # Проверка прав администратора и автоматическое повышение (UAC)
@@ -32,13 +53,19 @@ def is_admin() -> bool:
 
 def elevate_if_needed():
     if sys.platform == "win32" and not is_admin():
-        script_path = os.path.abspath(__file__)
-        params = f'"{script_path}"'
-        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+        target = sys.executable if getattr(sys, "frozen", False) else sys.executable
+        params = "" if getattr(sys, "frozen", False) else f'"{os.path.abspath(__file__)}"'
+        
+        # Передаем исходные аргументы (например --minimized)
+        extra_args = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        if extra_args:
+            params = f"{params} {extra_args}".strip()
+
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", target, params, None, 1)
         if ret > 32:
             sys.exit(0)
         else:
-            print("Предупреждение: Запуск без прав администратора. Для глобального режима могут потребоваться права.")
+            print("Предупреждение: Запуск без прав администратора. Изолированный режим работает без ограничений.")
 
 
 # Настройка темы CustomTkinter
@@ -56,7 +83,6 @@ class RestartConfirmDialog(ctk.CTkToplevel):
         self.transient(parent)
         self.grab_set()
 
-        # Центрирование относительно родителя
         parent.update_idletasks()
         px = parent.winfo_x()
         py = parent.winfo_y()
@@ -74,7 +100,6 @@ class RestartConfirmDialog(ctk.CTkToplevel):
     def _create_widgets(self):
         self.grid_columnconfigure(0, weight=1)
 
-        # Карточка с предупреждением
         frame = ctk.CTkFrame(self, corner_radius=12, fg_color=("#1f242c", "#161b22"))
         frame.pack(fill="both", expand=True, padx=16, pady=16)
 
@@ -141,19 +166,20 @@ class RestartConfirmDialog(ctk.CTkToplevel):
 
 
 class GeoHideApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, start_minimized: bool = False):
         super().__init__()
 
         self.title("GeoHide DNS Manager")
-        self.geometry("780x740")
-        self.minsize(720, 680)
+        self.geometry("780x760")
+        self.minsize(720, 700)
 
-        self._center_window(780, 740)
+        self._center_window(780, 760)
         self._setup_icon()
 
         self.is_busy = False
         self.auto_refresh_enabled = True
         self.active_mode = "isolated"
+        self.is_exiting = False
 
         # Локальный Smart Proxy сервер
         self.smart_proxy = GeoHideSmartProxy(
@@ -168,14 +194,28 @@ class GeoHideApp(ctk.CTk):
         if antigravity_config.is_antigravity_proxy_configured() or antigravity_config.is_user_proxy_env_set():
             self.smart_proxy.start()
 
+        # Настройка системного трея
+        self._setup_tray()
+
+        # Протокол перехвата кнопки закрытия [X] -> сворачивание в трей
+        self.protocol("WM_DELETE_WINDOW", self.minimize_to_tray)
+
         self.log("Приложение GeoHide Manager успешно запущено.")
         if is_admin():
             self.log("Режим Администратора активен.")
         else:
-            self.log("Запущено в стандартном пользовательском режиме. Изолированный режим работает полностью без UAC.", level="INFO")
+            self.log("Запущено в стандартном пользовательском режиме. Изолированный режим работает без ограничений.")
+
+        if autostart.is_autostart_enabled():
+            self.log("Автозапуск с Windows: Включен.")
 
         self.trigger_status_check()
         self._schedule_auto_refresh()
+
+        # Если передан флаг --minimized, скрываем окно сразу
+        if start_minimized:
+            self.withdraw()
+            self.log("Приложение запущено в свернутом виде (в системном трее).")
 
     def _center_window(self, width: int, height: int):
         self.update_idletasks()
@@ -186,9 +226,8 @@ class GeoHideApp(ctk.CTk):
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _setup_icon(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        ico_path = os.path.join(base_dir, "icon.ico")
-        png_path = os.path.join(base_dir, "icon.png")
+        ico_path = get_resource_path("icon.ico")
+        png_path = get_resource_path("icon.png")
 
         if os.path.exists(ico_path):
             try:
@@ -201,8 +240,83 @@ class GeoHideApp(ctk.CTk):
             try:
                 pil_img = Image.open(png_path)
                 self.logo_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(48, 48))
+                self.pil_icon = pil_img
             except Exception:
-                pass
+                self.pil_icon = None
+        else:
+            self.pil_icon = None
+
+    def _setup_tray(self):
+        """Инициализация системного трея pystray."""
+        if not self.pil_icon:
+            # Создаем базовую иконку, если файл отсутствует
+            self.pil_icon = Image.new("RGBA", (64, 64), color="#238636")
+
+        menu = pystray.Menu(
+            item("Открыть окно", self.show_window, default=True),
+            item(
+                "Включить прокси",
+                lambda: self.after(0, self.on_enable_clicked),
+                visible=lambda item: not self.smart_proxy.is_running
+            ),
+            item(
+                "Отключить прокси",
+                lambda: self.after(0, self.on_disable_clicked),
+                visible=lambda item: self.smart_proxy.is_running
+            ),
+            pystray.Menu.SEPARATOR,
+            item(
+                "Автозапуск с Windows",
+                self._toggle_autostart_tray,
+                checked=lambda item: autostart.is_autostart_enabled()
+            ),
+            pystray.Menu.SEPARATOR,
+            item("Выход", self.exit_application)
+        )
+
+        self.tray_icon = pystray.Icon("GeoHideManager", self.pil_icon, "GeoHide DNS Manager", menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def show_window(self, icon=None, item=None):
+        """Восстанавливает и поднимает окно на передний план."""
+        def _show():
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        self.after(0, _show)
+
+    def minimize_to_tray(self):
+        """Сворачивает окно в системный трей вместо завершения работы."""
+        self.withdraw()
+        self.log("Окно свернуто в системный трей возле часов Windows.")
+
+    def exit_application(self, icon=None, item=None):
+        """Полное закрытие приложения с корректной остановкой прокси."""
+        self.is_exiting = True
+        if self.smart_proxy and self.smart_proxy.is_running:
+            self.smart_proxy.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.after(0, self.destroy)
+
+    def _toggle_autostart_tray(self, icon=None, item=None):
+        current = autostart.is_autostart_enabled()
+        autostart.set_autostart(not current)
+        self.after(0, self._update_autostart_ui)
+
+    def _on_autostart_switch_changed(self):
+        is_on = self.autostart_switch.get() == 1
+        autostart.set_autostart(is_on)
+        state_str = "включен" if is_on else "отключен"
+        self.log(f"Автозапуск с Windows {state_str}.")
+
+    def _update_autostart_ui(self):
+        is_on = autostart.is_autostart_enabled()
+        if hasattr(self, "autostart_switch"):
+            if is_on:
+                self.autostart_switch.select()
+            else:
+                self.autostart_switch.deselect()
 
     def _create_widgets(self):
         self.grid_columnconfigure(0, weight=1)
@@ -232,21 +346,35 @@ class GeoHideApp(ctk.CTk):
         )
         self.subtitle_label.grid(row=1, column=1, sticky="w", pady=(0, 12))
 
+        # Правый блок шапки (Автозапуск + бейдж)
+        self.header_right = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        self.header_right.grid(row=0, column=2, rowspan=2, padx=16, pady=12, sticky="e")
+
+        self.autostart_switch = ctk.CTkSwitch(
+            self.header_right,
+            text="Автозапуск",
+            font=ctk.CTkFont(size=11),
+            command=self._on_autostart_switch_changed
+        )
+        if autostart.is_autostart_enabled():
+            self.autostart_switch.select()
+        self.autostart_switch.pack(side="top", anchor="e", pady=(0, 6))
+
         admin_text = "🛡️ Администратор" if is_admin() else "👤 Пользователь"
         admin_color = "#238636" if is_admin() else "#388bfd"
         self.admin_badge = ctk.CTkLabel(
-            self.header_frame,
+            self.header_right,
             text=admin_text,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#ffffff",
             fg_color=admin_color,
-            corner_radius=8,
-            padx=10,
-            pady=4
+            corner_radius=6,
+            padx=8,
+            pady=2
         )
-        self.admin_badge.grid(row=0, column=2, rowspan=2, padx=16, pady=12, sticky="e")
+        self.admin_badge.pack(side="bottom", anchor="e")
 
-        # ---------------- 2. Переключатель режима работы ----------------
+        # ---------------- 2. Переключатель режима ----------------
         self.mode_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.mode_frame.grid(row=1, column=0, padx=16, pady=(2, 6), sticky="ew")
         self.mode_frame.grid_columnconfigure(0, weight=1)
@@ -426,8 +554,9 @@ class GeoHideApp(ctk.CTk):
         full_line = f"{prefix}{tag} {message}\n"
 
         def _append():
-            self.log_box.insert("end", full_line)
-            self.log_box.see("end")
+            if hasattr(self, "log_box") and self.log_box.winfo_exists():
+                self.log_box.insert("end", full_line)
+                self.log_box.see("end")
 
         self.after(0, _append)
 
@@ -447,7 +576,7 @@ class GeoHideApp(ctk.CTk):
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
             self.status_time_label.configure(text=f"Обновлено: {now_str}")
 
-    # ---------------- Логика включения / выключения ----------------
+    # ---------------- Включение / выключение ----------------
     def on_enable_clicked(self):
         if self.is_busy:
             return
@@ -460,14 +589,12 @@ class GeoHideApp(ctk.CTk):
         self.set_busy(True, "Включение Smart Proxy")
         self.log("Запуск локального Smart Proxy...")
         
-        # 1. Запуск прокси сервера
         proxy_ok = self.smart_proxy.start()
         if not proxy_ok:
             self.log("Ошибка запуска Smart Proxy!", level="ERR")
             self.set_busy(False)
             return
 
-        # 2. Настройка Antigravity IDE, 2.0 и CLI
         self.log("Настройка Antigravity IDE (settings.json) и переменных среды для CLI (agy) / 2.0...")
         cfg_ok, cfg_msg = antigravity_config.enable_all_antigravity_proxies("http://127.0.0.1:8899")
         if cfg_ok:
@@ -475,25 +602,22 @@ class GeoHideApp(ctk.CTk):
         else:
             self.log(cfg_msg, level="WARN")
 
-        # 3. Проверка: запущена ли Antigravity прямо сейчас
         is_running = antigravity_config.is_any_antigravity_running()
         self.set_busy(False)
         self._worker_check_status()
 
         if is_running:
             self.log("Обнаружена активная сессия Antigravity. Запрос подтверждения перезапуска...", level="WARN")
-            # Открываем диалоговое окно в главном GUI потоке
             self.after(0, self._show_restart_dialog)
         else:
             self.log("Antigravity сейчас не запущена. При следующем запуске она сразу подключится через GeoHide.", level="OK")
 
     def _show_restart_dialog(self):
-        """Отображает диалог предупреждения и перезапуска."""
         def on_restart():
             threading.Thread(target=self._do_restart_antigravity, daemon=True).start()
 
         def on_later():
-            self.log("Пользователь выбрал отложить перезапуск. Настройки прокси вступят в силу после ручного перезапуска.", level="INFO")
+            self.log("Перезапуск отложен. Настройки прокси вступят в силу после ручного перезапуска.", level="INFO")
 
         RestartConfirmDialog(self, on_restart=on_restart, on_later=on_later)
 
@@ -571,6 +695,9 @@ class GeoHideApp(ctk.CTk):
         procs = antigravity_config.get_target_processes_status()
 
         def _update_ui():
+            if not self.winfo_exists():
+                return
+
             self.tile1_title.configure(text="🛡️ Smart Proxy")
             self.tile2_title.configure(text="⚙️ IDE & CLI Config")
             self.tile3_title.configure(text="⚡ Процессы Antigravity")
@@ -642,6 +769,9 @@ class GeoHideApp(ctk.CTk):
         ping_ok, ping_msg = geohide_core.ping_host("gemini.google.com")
 
         def _update_ui():
+            if not self.winfo_exists():
+                return
+
             self.tile1_title.configure(text="🌐 DNS Серверы")
             self.tile2_title.configure(text="📝 Файл Hosts")
             self.tile3_title.configure(text="⚡ Пинг Gemini")
@@ -713,15 +843,10 @@ class GeoHideApp(ctk.CTk):
 
         self.after(0, _update_ui)
 
-    def on_closing(self):
-        if self.smart_proxy and self.smart_proxy.is_running:
-            self.smart_proxy.stop()
-        self.destroy()
-
 
 if __name__ == "__main__":
     elevate_if_needed()
 
-    app = GeoHideApp()
-    app.protocol("WM_DELETE_WINDOW", app.on_closing)
+    start_min = "--minimized" in sys.argv or "--tray" in sys.argv
+    app = GeoHideApp(start_minimized=start_min)
     app.mainloop()
