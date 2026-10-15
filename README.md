@@ -150,6 +150,15 @@ pyinstaller --noconsole --onefile --clean --icon=icon.ico --add-data "icon.ico;.
 
 ## 📝 Журнал изменений (Changelog)
 
+### Версия 1.4.1 (15.10.2026)
+- **Устранение ошибки «Model unavailable, retrying in 4s» в режиме Smart Proxy:**
+  - Полностью переписан сетевой пайп `_pipe_bidirectional` в `local_proxy.py`: переход на двухпоточную блокирующую архитектуру с полной поддержкой постоянных соединений HTTP/2, gRPC и streaming RPC.
+  - Устранен ложный 30-секундный таймаут `select.select`, приводивший к разрыву пула HTTP/2 соединений между запросами к модели.
+  - Устранена ошибка переполнения буфера `BlockingIOError (WinError 10035)` при стриминге больших ответов.
+  - Добавлена аппаратная поддержка TCP KeepAlive на уровне Windows (`SIO_KEEPALIVE_VALS`) для удержания сессий.
+  - Исключены нестабильные и таймаутящие IP из списка серверов GeoHide (`45.155.204.190`, `37.230.192.51`), таймаут переключения ускорен до 2.5 сек.
+  - Расширена база AI-доменов: добавлены `cloudcode-pa.googleapis.com`, `aiplatform.googleapis.com`, `s-aiplatform.googleapis.com`, `aicode.googleapis.com`.
+
 ### Версия 1.4.0 (15.10.2026)
 - **Разблокировка входа с любых Google аккаунтов (Снятие ошибки 400 / ineligible):**
   - Разработан модуль `account_patcher.py`, реализующий побайтовый патч Protobuf дескрипторов `ineligible` → `inexigible` для `language_server.exe` и `agy.exe`.
